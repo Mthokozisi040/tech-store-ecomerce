@@ -21,6 +21,59 @@ app.use(cors()); // Enable CORS for all routes
 app.use(helmet()); // Security middleware that helps secure my Express apps by setting various HTTP headers
 app.use(morgan('dev')); // Logging middleware
 
+//apply arcjet rate limiting and security rules
+app.use(async (req, res, next) => {
+    try {
+        const decision = await arcjetInstance.protect(req,{
+            requested:1,// number of requests
+        })
+        if (decision.isDenied()) {
+            if (decision.reason.isRateLimit()) {
+                res.status(429).json({ 
+                    error: 'Too many requests, please try again later.' 
+                });
+            } else if (decision.reason.isBot()) {
+                res.status(403).json({ 
+                    error: 'Access denied for bots.' 
+                });
+            } else {
+                res.status(403).json({ 
+                    error: 'Access denied.' 
+                });
+            }
+            return;
+        }
+        if(decision.results.some((result)=> result.reason.isBot() &&result.reason.isSpoofed())){
+            res.status(403).json({ 
+                error: 'Access denied for spoofed bots.' 
+            });
+            return;
+        }
+    } catch (error) {
+        console.log('Arcjet protection error:', error);
+        next(error); // Pass the error to the next middleware
+    }
+
+    const arcjetInstance = arcjet({
+        processId: process.env.ARCJET_KEY,
+        characteristics: ["ip.src"],
+        rules: [
+            shield({ mode: "LIVE" }),
+            detectBot({
+                mode: "LIVE",
+                allow: ["CATEGORY:SEARCH_ENGINE"]
+            }),
+            tokenBucket({
+                mode: "LIVE",
+                refillRate: 5, // requests per second
+                interval: 10,
+                capacity: 10 // maximum burst size
+            }),
+        ],
+    });
+    arcjetInstance(req, res, next);
+});
+
 app.use('/api/product', productRoutes); // Use the product routes});
 
 async function initDB() {
